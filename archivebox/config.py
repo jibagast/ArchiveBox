@@ -38,7 +38,7 @@ from hashlib import md5
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, Type, Tuple, Dict, Union, List
-from subprocess import run, PIPE, DEVNULL
+from subprocess import run, PIPE, STDOUT, DEVNULL
 from configparser import ConfigParser
 from collections import defaultdict
 import importlib.metadata
@@ -112,6 +112,7 @@ CONFIG_SCHEMA: Dict[str, ConfigDefaultDict] = {
         'LDAP_FIRSTNAME_ATTR':       {'type': str,   'default': None},
         'LDAP_LASTNAME_ATTR':        {'type': str,   'default': None},
         'LDAP_EMAIL_ATTR':           {'type': str,   'default': None},
+        'LDAP_CREATE_SUPERUSER':      {'type': bool,  'default': False},
     },
 
     'ARCHIVE_METHOD_TOGGLES': {
@@ -136,8 +137,8 @@ CONFIG_SCHEMA: Dict[str, ConfigDefaultDict] = {
     },
 
     'ARCHIVE_METHOD_OPTIONS': {
-        'RESOLUTION':               {'type': str,   'default': '1440,2000', 'aliases': ('SCREENSHOT_RESOLUTION',)},
-        'GIT_DOMAINS':              {'type': str,   'default': 'github.com,bitbucket.org,gitlab.com,gist.github.com'},
+        'RESOLUTION':               {'type': str,   'default': '1440,2000', 'aliases': ('SCREENSHOT_RESOLUTION','WINDOW_SIZE')},
+        'GIT_DOMAINS':              {'type': str,   'default': 'github.com,bitbucket.org,gitlab.com,gist.github.com,codeberg.org,gitea.com,git.sr.ht'},
         'CHECK_SSL_VALIDITY':       {'type': bool,  'default': True},
         'MEDIA_MAX_SIZE':           {'type': str,   'default': '750m'},
 
@@ -152,6 +153,8 @@ CONFIG_SCHEMA: Dict[str, ConfigDefaultDict] = {
         'CHROME_HEADLESS':          {'type': bool,  'default': True},
         'CHROME_SANDBOX':           {'type': bool,  'default': lambda c: not c['IN_DOCKER']},
         'YOUTUBEDL_ARGS':           {'type': list,  'default': lambda c: [
+                                                                '--restrict-filenames',
+                                                                '--trim-filenames', '128',
                                                                 '--write-description',
                                                                 '--write-info-json',
                                                                 '--write-annotations',
@@ -363,24 +366,32 @@ ALLOWDENYLIST_REGEX_FLAGS: int = re.IGNORECASE | re.UNICODE | re.MULTILINE
 
 ############################## Version Config ##################################
 
-def get_system_user():
-    SYSTEM_USER = getpass.getuser() or os.getlogin()
+def get_system_user() -> str:
+    # some host OS's are unable to provide a username (k3s, Windows), making this complicated
+    # uid 999 is especially problematic and breaks many attempts
+    SYSTEM_USER = None
+    FALLBACK_USER_PLACHOLDER = f'user_{os.getuid()}'
+
+    # Option 1
     try:
         import pwd
-        return pwd.getpwuid(os.geteuid()).pw_name or SYSTEM_USER
-    except KeyError:
-        # Process' UID might not map to a user in cases such as running the Docker image
-        # (where `archivebox` is 999) as a different UID.
-        pass
-    except ModuleNotFoundError:
-        # pwd doesn't exist on windows
-        pass
-    except Exception:
-        # this should never happen, uncomment to debug
-        # raise
+        SYSTEM_USER = SYSTEM_USER or pwd.getpwuid(os.geteuid()).pw_name
+    except (ModuleNotFoundError, Exception):
         pass
 
-    return SYSTEM_USER
+    # Option 2
+    try:
+        SYSTEM_USER = SYSTEM_USER or getpass.getuser()
+    except Exception:
+        pass
+
+    # Option 3
+    try:
+        SYSTEM_USER = SYSTEM_USER or os.getlogin()
+    except Exception:
+        pass
+
+    return SYSTEM_USER or FALLBACK_USER_PLACHOLDER
 
 def get_version(config):
     try:
@@ -823,7 +834,7 @@ def hint(text: Union[Tuple[str, ...], List[str], str], prefix='    ', config: Op
 
 
 # Dependency Metadata Helpers
-def bin_version(binary: Optional[str]) -> Optional[str]:
+def bin_version(binary: Optional[str], cmd=None) -> Optional[str]:
     """check the presence and return valid version line of a specified binary"""
 
     abspath = bin_path(binary)
@@ -832,11 +843,21 @@ def bin_version(binary: Optional[str]) -> Optional[str]:
 
     try:
         bin_env = os.environ | {'LANG': 'C'}
-        version_str = run([abspath, "--version"], stdout=PIPE, env=bin_env).stdout.strip().decode()
+        is_cmd_str = cmd and isinstance(cmd, str)
+        version_str = run(cmd or [abspath, "--version"], shell=is_cmd_str, stdout=PIPE, stderr=STDOUT, env=bin_env).stdout.strip().decode()
         if not version_str:
-            version_str = run([abspath, "--version"], stdout=PIPE).stdout.strip().decode()
-        # take first 3 columns of first line of version info
-        return ' '.join(version_str.split('\n')[0].strip().split()[:3])
+            version_str = run(cmd or [abspath, "--version"], shell=is_cmd_str, stdout=PIPE, stderr=STDOUT).stdout.strip().decode()
+        
+        version_ptn = re.compile(r"\d+?\.\d+?\.?\d*", re.MULTILINE)
+        try:
+            version_nums = version_ptn.findall(version_str.split('\n')[0])[0]
+            if version_nums:
+                return version_nums
+            else:
+                raise IndexError
+        except IndexError:
+            # take first 3 columns of first line of version info
+            return ' '.join(version_str.split('\n')[0].strip().split()[:3])
     except OSError:
         pass
         # stderr(f'[X] Unable to find working version of dependency: {binary}', color='red')

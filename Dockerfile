@@ -15,8 +15,8 @@
 # Read more about [developing Archivebox](https://github.com/ArchiveBox/ArchiveBox#archivebox-development).
 
 
-# Use Debian 12 w/ faster package updates: https://packages.debian.org/bookworm-backports/
 FROM python:3.11-slim-bookworm
+# Uses Debian 12 w/ faster-updating apt-lists added below: https://packages.debian.org/bookworm-backports/
 
 LABEL name="archivebox" \
     maintainer="Nick Sweeting <dockerfile@archivebox.io>" \
@@ -113,9 +113,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
         # 1. packaging dependencies
         apt-transport-https ca-certificates apt-utils gnupg2 curl wget \
         # 2. docker and init system dependencies
-        zlib1g-dev dumb-init gosu cron unzip grep \
+        zlib1g-dev dumb-init gosu cron unzip grep ncat \
         # 3. frivolous CLI helpers to make debugging failed archiving easier
-        # nano iputils-ping dnsutils htop procps jq yq
+        # nano iputils-ping dnsutils htop procps jq yq \
     && rm -rf /var/lib/apt/lists/*
 
 ######### Language Environments ####################################
@@ -167,7 +167,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
         curl wget git yt-dlp ffmpeg ripgrep \
         # Packages we have also needed in the past:
         # youtube-dl wget2 aria2 python3-pyxattr rtmpdump libfribidi-bin mpv \
-        # fontconfig fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-symbola fonts-noto fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/* \
     # Save version info
     && ( \
@@ -183,6 +182,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/pip,sharing=locked,id=pip-$TARGETARCH$TARGETVARIANT --mount=type=cache,target=/root/.cache/ms-playwright,sharing=locked,id=browsers-$TARGETARCH$TARGETVARIANT \
     echo "[+] Installing Browser binary dependencies to $PLAYWRIGHT_BROWSERS_PATH..." \
     && apt-get update -qq \
+    && apt-get install -qq -y -t bookworm-backports --no-install-recommends \
+        fontconfig fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-khmeros fonts-kacst fonts-symbola fonts-noto fonts-freefont-ttf \
+        # chrome can run without dbus/upower technically, it complains about missing dbus but should run ok anyway
+        # libxss1 dbus dbus-x11 upower \
+    # && service dbus start \
     && if [[ "$TARGETPLATFORM" == *amd64* || "$TARGETPLATFORM" == *arm64* ]]; then \
         # install Chromium using playwright
         pip install playwright \
@@ -192,7 +196,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
     else \
         # fall back to installing Chromium via apt-get on platforms not supported by playwright (e.g. risc, ARMv7, etc.) 
         apt-get install -qq -y -t bookworm-backports --no-install-recommends \
-            chromium fontconfig fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-symbola fonts-noto fonts-freefont-ttf \
+            chromium \
         && export CHROME_BINARY="$(which chromium)"; \
     fi \
     && rm -rf /var/lib/apt/lists/* \
@@ -262,7 +266,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-$TARGETARCH$T
 
 # Setup ArchiveBox runtime config
 WORKDIR "$DATA_DIR"
-ENV IN_DOCKER=True
+ENV IN_DOCKER=True \
+    CUSTOM_TEMPLATES_DIR=/data/templates
     ## No need to set explicitly, these values will be autodetected by archivebox in docker:
     # CHROME_SANDBOX=False \
     # WGET_BINARY="wget" \
@@ -289,9 +294,8 @@ WORKDIR "$DATA_DIR"
 VOLUME "$DATA_DIR"
 EXPOSE 8000
 
-# Optional:
-# HEALTHCHECK --interval=30s --timeout=20s --retries=15 \
-#     CMD curl --silent 'http://localhost:8000/admin/login/' || exit 1
+HEALTHCHECK --interval=30s --timeout=20s --retries=15 \
+    CMD curl --silent 'http://localhost:8000/health/' | grep -q 'OK'
 
 ENTRYPOINT ["dumb-init", "--", "/app/bin/docker_entrypoint.sh"]
 CMD ["archivebox", "server", "--quick-init", "0.0.0.0:8000"]

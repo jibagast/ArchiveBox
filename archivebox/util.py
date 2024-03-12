@@ -179,7 +179,11 @@ def download_url(url: str, timeout: int=None) -> str:
     if encoding is not None:
         response.encoding = encoding
 
-    return response.text
+    try:
+        return response.text
+    except UnicodeDecodeError:
+        # if response is non-test (e.g. image or other binary files), just return the filename instead
+        return url.rsplit('/', 1)[-1]
 
 @enforce_types
 def get_headers(url: str, timeout: int=None) -> str:
@@ -210,7 +214,11 @@ def get_headers(url: str, timeout: int=None) -> str:
     
     return pyjson.dumps(
         {
+            'URL': url,
             'Status-Code': response.status_code,
+            'Elapsed': response.elapsed,
+            'Encoding': response.encoding,
+            'Apparent-Encoding': response.apparent_encoding,
             **dict(response.headers),
         },
         indent=4,
@@ -220,6 +228,8 @@ def get_headers(url: str, timeout: int=None) -> str:
 @enforce_types
 def chrome_args(**options) -> List[str]:
     """helper to build up a chrome shell command with arguments"""
+
+    # Chrome CLI flag documentation: https://peter.sh/experiments/chromium-command-line-switches/
 
     from .config import CHROME_OPTIONS, CHROME_VERSION
 
@@ -248,23 +258,25 @@ def chrome_args(**options) -> List[str]:
             "--disable-software-rasterizer",
             "--run-all-compositor-stages-before-draw",
             "--hide-scrollbars",
-            "--window-size=1440,2000",
             "--autoplay-policy=no-user-gesture-required",
             "--no-first-run",
             "--use-fake-ui-for-media-stream",
             "--use-fake-device-for-media-stream",
             "--disable-sync",
+            # "--password-store=basic",
         )
+    
+    # disable automatic updating when running headless, as there's no user to see the upgrade prompts
+    cmd_args += ("--simulate-outdated-no-au='Tue, 31 Dec 2099 23:59:59 GMT'",)
 
+    # set window size for screenshot/pdf/etc. rendering
+    cmd_args += ('--window-size={}'.format(options['RESOLUTION']),)
 
     if not options['CHECK_SSL_VALIDITY']:
         cmd_args += ('--disable-web-security', '--ignore-certificate-errors')
 
     if options['CHROME_USER_AGENT']:
         cmd_args += ('--user-agent={}'.format(options['CHROME_USER_AGENT']),)
-
-    if options['RESOLUTION']:
-        cmd_args += ('--window-size={}'.format(options['RESOLUTION']),)
 
     if options['CHROME_TIMEOUT']:
        cmd_args += ('--timeout={}'.format(options['CHROME_TIMEOUT'] * 1000),)

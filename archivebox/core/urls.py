@@ -8,11 +8,6 @@ from django.views.generic.base import RedirectView
 
 from core.views import HomepageView, SnapshotView, PublicIndexView, AddView, HealthCheckView
 
-# GLOBAL_CONTEXT doesn't work as-is, disabled for now: https://github.com/ArchiveBox/ArchiveBox/discussions/1306
-# from config import VERSION, VERSIONS_AVAILABLE, CAN_UPGRADE
-# GLOBAL_CONTEXT = {'VERSION': VERSION, 'VERSIONS_AVAILABLE': VERSIONS_AVAILABLE, 'CAN_UPGRADE': CAN_UPGRADE}
-
-
 # print('DEBUG', settings.DEBUG)
 
 urlpatterns = [
@@ -25,6 +20,10 @@ urlpatterns = [
 
     path('archive/', RedirectView.as_view(url='/')),
     path('archive/<path:path>', SnapshotView.as_view(), name='Snapshot'),
+    path('web/<path:path>', SnapshotView.as_view()),   # support archive.org-style URLs
+
+    path('plugins/replaywebpage/', include('plugins.replaywebpage.urls')),
+    # ... dynamic load these someday if there are more of them
 
     path('admin/core/snapshot/add/', RedirectView.as_view(url='/add/')),
     path('add/', AddView.as_view(), name='add'),
@@ -36,9 +35,6 @@ urlpatterns = [
     path('accounts/', include('django.contrib.auth.urls')),
     path('admin/', admin.site.urls),
     
-    # do not add extra_context like this as not all admin views (e.g. ModelAdmin.autocomplete_view accept extra kwargs)
-    # path('admin/', admin.site.urls, {'extra_context': GLOBAL_CONTEXT}),
-
     path('health/', HealthCheckView.as_view(), name='healthcheck'),
     path('error/', lambda _: 1/0),
 
